@@ -1,0 +1,24 @@
+[Unit]
+Description=Jupiter Linux guided installer
+Documentation=https://github.com/Gasterboi2012/jupiter-stable
+After=systemd-user-sessions.service NetworkManager.service
+Wants=NetworkManager.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/jupiter-setup
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=no
+Environment=TERM=xterm-256color
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

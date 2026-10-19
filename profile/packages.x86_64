@@ -1,0 +1,27 @@
+# Jupiter Linux live installer - packages baked into the ISO.
+# The installed system uses installer/system-packages.txt instead.
+
+# Base and kernel
+base
+linux
+linux-firmware
+intel-ucode
+amd-ucode
+mkinitcpio
+mkinitcpio-archiso
+
+# Boot (UEFI only)
+efibootmgr
+dosfstools
+mtools
+
+# Installer tooling
+arch-install-scripts
+gptfdisk
+parted
+pciutils
+curl
+python-textual
+networkmanager
+wpa_supplicant
+terminus-font
