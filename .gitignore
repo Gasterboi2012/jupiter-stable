@@ -1,0 +1,6 @@
+# Build outputs and scratch (archiso work dir, generated ISO, local Arch build root)
+.build/
+out/
+work/
+__pycache__/
+*.pyc

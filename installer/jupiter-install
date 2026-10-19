@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# jupiter-install - installs Jupiter Linux onto a disk. Started by jupiter-setup.
+#
+# Usage: jupiter-install --answers /run/jupiter/answers.env
+#
+# Environment (mostly for testing):
+#   JUP_DRY_RUN=1          Print every destructive command instead of running it.
+#   JUP_BRANDING_DIR       Branding overlay (default /usr/share/jupiter/branding).
+#   JUP_PACKAGE_LIST       Package list (default /usr/share/jupiter/system-packages.txt).
+#   JUP_TARGET             Install target mount point (default /mnt).
+#   JUP_LOG_FILE           Log file (default /var/log/jupiter-install.log).
+#
+# Progress lines look like "::STEP <n>/<total> <text>" and are parsed by jupiter-setup.
+set -Eeuo pipefail
+
+BRANDING_DIR="${JUP_BRANDING_DIR:-/usr/share/jupiter/branding}"
+PACKAGE_LIST="${JUP_PACKAGE_LIST:-/usr/share/jupiter/system-packages.txt}"
+TARGET="${JUP_TARGET:-/mnt}"
+LOG_FILE="${JUP_LOG_FILE:-/var/log/jupiter-install.log}"
+DRY_RUN="${JUP_DRY_RUN:-0}"
+TOTAL_STEPS=10
+ANSWERS_FILE=""
+KERNEL_EXTRA_PARAMS=""
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+step() { echo "::STEP $1/$TOTAL_STEPS $2"; }
+info() { echo "    $*"; }
+warn() { echo "    WARNING: $*"; }
+
+# Run a command, or only print it in dry-run mode.
+run() {
+    if [[ "$DRY_RUN" == 1 ]]; then
+        printf '+'
+        printf ' %q' "$@"
+        printf '\n'
+        return 0
+    fi
+    "$@"
+}
+
+# Run a command inside the target system.
+chroot_run() { run arch-chroot "$TARGET" "$@"; }
+
+# Write a file in the target (content as one string).
+write_target() {
+    local path="$1" content="$2"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        echo "+ write $path"
+        return 0
+    fi
+    mkdir -p "$(dirname "$path")"
+    printf '%s\n' "$content" > "$path"
+}
+
+# Partition device name helper: /dev/sda -> /dev/sda1, /dev/nvme0n1 -> /dev/nvme0n1p1.
+part() {
+    if [[ "$1" =~ [0-9]$ ]]; then echo "${1}p$2"; else echo "${1}$2"; fi
+}
+
+usage() {
+    echo "Usage: jupiter-install --answers FILE" >&2
+    exit 2
+}
+
+load_answers() {
+    [[ -r "$ANSWERS_FILE" ]] || die "answers file not readable: $ANSWERS_FILE"
+    # shellcheck source=/dev/null
+    source "$ANSWERS_FILE"
+    if [[ "$DRY_RUN" != 1 ]]; then
+        # The answers file holds the password; remove it as soon as it is loaded.
+        shred -u "$ANSWERS_FILE" 2>/dev/null || rm -f "$ANSWERS_FILE"
+    fi
+}
+
+validate_answers() {
+    [[ "${JUP_DISK:-}" =~ ^/dev/[A-Za-z0-9]+$ ]] || die "invalid disk: '${JUP_DISK:-}'"
+    [[ "${JUP_USERNAME:-}" =~ ^[a-z_][a-z0-9_-]{0,30}$ && "$JUP_USERNAME" != root ]] || die "invalid username"
+    [[ "${JUP_HOSTNAME:-}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || die "invalid hostname"
+    [[ "${JUP_DRIVER:-}" == mesa || "${JUP_DRIVER:-}" == nvidia ]] || die "invalid driver: '${JUP_DRIVER:-}'"
+    [[ -n "${JUP_PASSWORD:-}" ]] || die "password is empty"
+
+    if [[ "$DRY_RUN" != 1 ]]; then
+        [[ $EUID -eq 0 ]] || die "must run as root"
+        [[ -d /sys/firmware/efi ]] || die "Jupiter requires a UEFI boot"
+        [[ -b "$JUP_DISK" ]] || die "$JUP_DISK is not a block device"
+        local live_src live_parent
+        live_src="$(findmnt -n -o SOURCE /run/archiso/bootmnt 2>/dev/null || true)"
+        if [[ -n "$live_src" ]]; then
+            live_parent="$(lsblk -no PKNAME "$live_src" 2>/dev/null | head -n1 || true)"
+            [[ "/dev/${live_parent:-$(basename "$live_src")}" != "$JUP_DISK" ]] \
+                || die "$JUP_DISK is the live installation medium"
+        fi
+    fi
+}
+
+partition_disk() {
+    run sgdisk --zap-all "$JUP_DISK"
+    run sgdisk -n 1:0:+1G -t 1:ef00 -c 1:JUPITER_EFI "$JUP_DISK"
+    run sgdisk -n 2:0:0 -t 2:8304 -c 2:JUPITER_ROOT "$JUP_DISK"
+    run partprobe "$JUP_DISK"
+    run udevadm settle
+}
+
+install_base() {
+    local -a packages driver_packages
+    mapfile -t packages < <(grep -vE '^[[:space:]]*(#|$)' "$PACKAGE_LIST" || true)
+    [[ ${#packages[@]} -gt 0 || "$DRY_RUN" == 1 ]] || die "package list is empty: $PACKAGE_LIST"
+    case "$JUP_DRIVER" in
+        mesa) driver_packages=(mesa vulkan-radeon vulkan-intel) ;;
+        nvidia) driver_packages=(nvidia-open nvidia-utils egl-wayland) ;;
+    esac
+    run pacstrap -K "$TARGET" "${packages[@]}" "${driver_packages[@]}"
+}
+
+configure_system() {
+    if [[ "$DRY_RUN" == 1 ]]; then
+        echo "+ genfstab -U $TARGET > $TARGET/etc/fstab"
+    else
+        genfstab -U "$TARGET" > "$TARGET/etc/fstab"
+    fi
+
+    # Jupiter branding (os-release, KDE About page, fastfetch, default browser, ...).
+    run cp -a "$BRANDING_DIR/." "$TARGET/"
+
+    chroot_run sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+    chroot_run locale-gen
+    write_target "$TARGET/etc/locale.conf" "LANG=en_US.UTF-8"
+    write_target "$TARGET/etc/vconsole.conf" "KEYMAP=us"
+    chroot_run ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+    chroot_run hwclock --systohc
+
+    write_target "$TARGET/etc/hostname" "$JUP_HOSTNAME"
+    write_target "$TARGET/etc/hosts" "127.0.0.1 localhost
+::1 localhost
+127.0.1.1 $JUP_HOSTNAME.localdomain $JUP_HOSTNAME"
+
+    chroot_run useradd -m -G wheel -s /bin/bash -c "${JUP_FULLNAME:-}" "$JUP_USERNAME"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        echo "+ set password for $JUP_USERNAME (value hidden)"
+    else
+        printf '%s:%s\n' "$JUP_USERNAME" "$JUP_PASSWORD" | arch-chroot "$TARGET" chpasswd
+    fi
+    chroot_run passwd -l root
+    chroot_run sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+    chroot_run visudo -c
+
+    chroot_run systemctl enable NetworkManager.service sddm.service
+}
+
+configure_drivers() {
+    if [[ "$JUP_DRIVER" == nvidia ]]; then
+        KERNEL_EXTRA_PARAMS="nvidia_drm.modeset=1 nvidia_drm.fbdev=1"
+        chroot_run sed -i 's/^MODULES=.*/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
+        chroot_run mkinitcpio -P
+    else
+        info "Mesa selected: open-source drivers need no extra configuration."
+    fi
+}
+
+install_bootloader() {
+    chroot_run bootctl --esp-path=/boot install
+
+    local root_uuid="DRY-RUN-UUID"
+    if [[ "$DRY_RUN" != 1 ]]; then
+        root_uuid="$(blkid -s UUID -o value "$ROOT_PART")"
+    fi
+    write_target "$TARGET/boot/loader/loader.conf" "default jupiter.conf
+timeout 3
+console-mode max
+editor no"
+    write_target "$TARGET/boot/loader/entries/jupiter.conf" "title   Jupiter Linux
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options root=UUID=$root_uuid rw quiet loglevel=3 $KERNEL_EXTRA_PARAMS"
+}
+
+restore_network() {
+    # Carry over Wi-Fi/Ethernet profiles configured on the live system.
+    local live_dir=/etc/NetworkManager/system-connections
+    if [[ -d "$live_dir" ]] && compgen -G "$live_dir/*" > /dev/null; then
+        run mkdir -p "$TARGET/etc/NetworkManager/system-connections"
+        run cp -a "$live_dir/." "$TARGET/etc/NetworkManager/system-connections/"
+        run chmod 600 "$TARGET"/etc/NetworkManager/system-connections/*
+    fi
+    # The AUR build below needs working DNS inside the target.
+    if [[ -r /etc/resolv.conf ]]; then
+        run cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+    fi
+}
+
+install_aur() {
+    local sudo_rule="$TARGET/etc/sudoers.d/99-jupiter-install"
+    write_target "$sudo_rule" "$JUP_USERNAME ALL=(ALL) NOPASSWD: ALL"
+    run chmod 440 "$sudo_rule"
+
+    # paru is AUR-only, so bootstrap it from the paru-bin AUR package.
+    chroot_run runuser -u "$JUP_USERNAME" -- bash -c \
+        'set -e; cd /tmp && rm -rf paru-bin && git clone --depth 1 https://aur.archlinux.org/paru-bin.git && cd paru-bin && makepkg -si --noconfirm --needed && cd /tmp && rm -rf paru-bin'
+
+    # The default browser is installed from the AUR; failure here should not abort the install.
+    if ! chroot_run runuser -u "$JUP_USERNAME" -- paru -S --noconfirm --needed --skipreview zen-browser-bin; then
+        warn "zen-browser-bin could not be installed. Run 'paru -S zen-browser-bin' after first boot."
+    fi
+}
+
+remove_temporary_sudo() {
+    run rm -f "$TARGET/etc/sudoers.d/99-jupiter-install"
+}
+
+unmount_target() {
+    run sync
+    run umount -R "$TARGET"
+}
+
+on_error() {
+    local line="$1"
+    echo "ERROR: installation failed near line $line. See $LOG_FILE" >&2
+}
+
+main() {
+    local -a args=("$@")
+    local i
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        case "${args[$i]}" in
+            --answers) ANSWERS_FILE="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
+            -h | --help) usage ;;
+            *) usage ;;
+        esac
+    done
+    [[ -n "$ANSWERS_FILE" ]] || usage
+
+    if [[ "$DRY_RUN" != 1 ]]; then
+        mkdir -p "$(dirname "$LOG_FILE")"
+        exec > >(tee -a "$LOG_FILE") 2>&1
+    fi
+    trap 'on_error $LINENO' ERR
+
+    load_answers
+    validate_answers
+
+    ROOT_PART="$(part "$JUP_DISK" 2)"
+    EFI_PART="$(part "$JUP_DISK" 1)"
+
+    step 1 "Partitioning $JUP_DISK"
+    partition_disk
+
+    step 2 "Formatting filesystems"
+    run mkfs.fat -F32 -n JUPITER_EFI "$EFI_PART"
+    run mkfs.ext4 -q -F -L jupiter_root "$ROOT_PART"
+
+    step 3 "Mounting the target system"
+    run mount "$ROOT_PART" "$TARGET"
+    run mount --mkdir "$EFI_PART" "$TARGET/boot"
+
+    step 4 "Installing Jupiter base system and KDE Plasma"
+    install_base
+
+    step 5 "Applying Jupiter configuration and branding"
+    configure_system
+
+    step 6 "Configuring graphics driver ($JUP_DRIVER)"
+    configure_drivers
+
+    step 7 "Installing bootloader"
+    install_bootloader
+
+    step 8 "Restoring network connections"
+    restore_network
+
+    step 9 "Installing paru and Zen Browser from the AUR"
+    install_aur
+
+    step 10 "Finishing up"
+    remove_temporary_sudo
+    unmount_target
+    echo "Jupiter Linux installation complete."
+}
+
+main "$@"

@@ -1,0 +1,8 @@
+# KDE Info Center -> "About this system" branding for Jupiter Linux.
+# Read by kinfocenter via KSharedConfig "kcm-about-distrorc" (system-wide: /etc/xdg).
+[General]
+Name=Jupiter Linux
+Version=1.0
+Variant=Minimal Plasma
+LogoPath=jupiter-logo
+Website=https://github.com/Gasterboi2012/jupiter-stable

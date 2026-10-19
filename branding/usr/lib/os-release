@@ -1,0 +1,15 @@
+NAME="Jupiter Linux"
+PRETTY_NAME="Jupiter Linux"
+ID=jupiter
+ID_LIKE=arch
+BUILD_ID=rolling
+VERSION="1.0"
+VERSION_ID=1.0
+VARIANT="Minimal Plasma"
+VARIANT_ID=minimal
+ANSI_COLOR="38;2;224;165;38"
+LOGO=jupiter-logo
+HOME_URL="https://github.com/Gasterboi2012/jupiter-stable"
+DOCUMENTATION_URL="https://github.com/Gasterboi2012/jupiter-stable#readme"
+SUPPORT_URL="https://github.com/Gasterboi2012/jupiter-stable/issues"
+BUG_REPORT_URL="https://github.com/Gasterboi2012/jupiter-stable/issues"

@@ -1,0 +1,38 @@
+# Jupiter Linux - packages installed into the target system (pacstrap).
+# One package per line; lines starting with # are comments.
+
+# Base system and kernel
+base
+linux
+linux-firmware
+base-devel
+sudo
+git
+man-db
+
+# Networking (NetworkManager; plasma-nm is the tray applet)
+networkmanager
+plasma-nm
+wpa_supplicant
+
+# KDE Plasma - minimal desktop
+plasma-desktop
+plasma-workspace
+kwin
+powerdevil
+polkit-kde-agent
+systemsettings
+kinfocenter
+sddm
+
+# Audio
+pipewire
+pipewire-pulse
+wireplumber
+plasma-pa
+
+# Essentials
+konsole
+fastfetch
+noto-fonts
+xorg-xwayland
