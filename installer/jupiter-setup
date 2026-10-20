@@ -28,6 +28,7 @@ from pathlib import Path
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
@@ -217,8 +218,52 @@ class Answers:
 
 
 # ----------------------------------------------------------------- shared layout
-def card(*widgets, **kwargs) -> VerticalScroll:
-    return VerticalScroll(*widgets, id="card", **kwargs)
+# Keyboard model: the arrow keys (and Tab / Shift+Tab) move between controls on every screen.
+# Inside a choice list, up/down pick an option and move on past its first or last entry.
+class Card(VerticalScroll):
+    """Screen body. Not focusable itself, so the arrow keys move between controls instead of scrolling it."""
+
+    can_focus = False
+    BINDINGS = [
+        Binding("up,left", "app.focus_previous", show=False),
+        Binding("down,right", "app.focus_next", show=False),
+    ]
+
+
+class ChoiceSet(RadioSet):
+    """Radio list: arrows select the option directly and leave the list at either end."""
+
+    BINDINGS = [
+        Binding("up,left", "step(-1)", show=False),
+        Binding("down,right", "step(1)", show=False),
+    ]
+
+    def action_step(self, step: int) -> None:
+        options = list(self.query(RadioButton))
+        current = self.pressed_index
+        if current < 0:
+            target = 0 if step > 0 else len(options) - 1
+        else:
+            target = current + step
+        if 0 <= target < len(options):
+            options[target].value = True
+        elif step > 0:
+            self.app.action_focus_next()
+        else:
+            self.app.action_focus_previous()
+
+
+class ChoiceSelect(Select):
+    """Dropdown: Enter opens the list, the arrow keys move between controls."""
+
+    BINDINGS = [
+        Binding("up", "app.focus_previous", show=False),
+        Binding("down", "app.focus_next", show=False),
+    ]
+
+
+def card(*widgets, **kwargs) -> Card:
+    return Card(*widgets, id="card", **kwargs)
 
 
 def buttons(*widgets) -> Horizontal:
@@ -235,7 +280,10 @@ class JupiterScreen(Screen):
 
     def frame(self, *body: object) -> ComposeResult:
         yield Header(show_clock=False)
-        yield Static(f"Step {self.STEP} of {self.TOTAL}", classes="step")
+        yield Static(
+            f"Step {self.STEP} of {self.TOTAL}   ·   arrows or Tab: move   ·   Enter: select",
+            classes="step",
+        )
         with card():
             yield Static(self.TITLE_TEXT, classes="title")
             yield Static(self.SUBTITLE_TEXT, classes="subtitle")
@@ -249,6 +297,7 @@ class JupiterScreen(Screen):
 # ----------------------------------------------------------------- screens
 class WelcomeScreen(JupiterScreen):
     STEP = 1
+    AUTO_FOCUS = "#begin"  # never start on Quit: Enter must not exit by accident
     TITLE_TEXT = "Welcome to Jupiter Linux"
     SUBTITLE_TEXT = "A minimal, fast KDE Plasma desktop on Arch Linux."
 
@@ -294,7 +343,7 @@ class NetworkScreen(JupiterScreen):
     def compose(self) -> ComposeResult:
         yield from self.frame(
             Static("Scanning for Wi-Fi networks…", id="status", classes="hint"),
-            Select([], prompt="Choose a network", id="ssid", allow_blank=True),
+            ChoiceSelect([], prompt="Choose a network", id="ssid", allow_blank=True),
             Input(password=True, placeholder="Wi-Fi password (empty for open networks)", id="wifi-pass"),
             buttons(
                 Button("Back", id="back"),
@@ -378,7 +427,7 @@ class DiskScreen(JupiterScreen):
     def compose(self) -> ComposeResult:
         if self.disks:
             options = [RadioButton(disk.label, value=(i == 0)) for i, disk in enumerate(self.disks)]
-            body = [RadioSet(*options, id="disks")]
+            body = [ChoiceSet(*options, id="disks")]
         else:
             body = [Static("No suitable disk found (at least 8 GiB required).", classes="error")]
         yield from self.frame(
@@ -395,7 +444,7 @@ class DiskScreen(JupiterScreen):
 
     @on(Button.Pressed, "#continue")
     def on_continue(self) -> None:
-        index = self.query_one("#disks", RadioSet).pressed_index
+        index = self.query_one("#disks", ChoiceSet).pressed_index
         if index < 0:
             return
         self.app.answers.disk = self.disks[index].path
@@ -474,7 +523,7 @@ class DriverScreen(JupiterScreen):
         )
         yield from self.frame(
             Static(hint, classes="hint"),
-            RadioSet(
+            ChoiceSet(
                 RadioButton(
                     "Mesa  -  open-source drivers for AMD, Intel and generic GPUs",
                     value=not nvidia,
@@ -499,7 +548,7 @@ class DriverScreen(JupiterScreen):
 
     @on(Button.Pressed, "#continue")
     def on_continue(self) -> None:
-        button = self.query_one("#driver", RadioSet).pressed_button
+        button = self.query_one("#driver", ChoiceSet).pressed_button
         self.app.answers.driver = "nvidia" if button is not None and button.id == "drv-nvidia" else "mesa"
         self.app.push_screen(ReviewScreen())
 

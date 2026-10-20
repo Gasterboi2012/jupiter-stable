@@ -30,6 +30,9 @@ loader.exec_module(mod)
 
 from textual.widgets import Button, Input, RadioSet, Select  # noqa: E402
 
+# The wizard writes the answers file to /run/jupiter (root only); keep the test out of it.
+mod.ANSWERS_FILE = Path(os.environ.get("TMPDIR", "/tmp")) / f"jupiter-smoke-answers-{os.getpid()}.env"
+
 
 def shot(app, name: str) -> None:
     app.save_screenshot(filename=f"{name}.svg", path=str(SHOTS))
@@ -40,8 +43,79 @@ async def click(pilot, selector: str) -> None:
     await pilot.pause(0.3)
 
 
-async def main() -> None:
+def focused_id(app) -> str | None:
+    widget = app.focused
+    return getattr(widget, "id", None) or type(widget).__name__
+
+
+async def check_arrow_navigation() -> list[str]:
+    """Arrow keys must move between controls and pick radio/select options, without Tab."""
     failures: list[str] = []
+    app = mod.JupiterSetup()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.4)
+        if focused_id(app) != "begin":
+            failures.append(f"welcome should start on Begin, got {focused_id(app)}")
+        await pilot.press("right")
+        if focused_id(app) != "quit":
+            failures.append("right arrow should move from Begin to Quit")
+        await pilot.press("left")
+        if focused_id(app) != "begin":
+            failures.append("left arrow should move back to Begin")
+
+        app.push_screen(mod.DriverScreen())
+        await pilot.pause(0.4)
+        radio = app.screen.query_one("#driver", RadioSet)
+        if focused_id(app) != "driver":
+            failures.append(f"driver screen should start on the radio list, got {focused_id(app)}")
+        await pilot.press("down")
+        if radio.pressed_button is None or radio.pressed_button.id != "drv-nvidia":
+            failures.append("down arrow should select the next driver option")
+        await pilot.press("down")
+        if focused_id(app) != "back":
+            failures.append(f"down past the last option should leave the list, got {focused_id(app)}")
+        await pilot.press("right")
+        if focused_id(app) != "continue":
+            failures.append("right arrow should move from Back to Continue")
+        await pilot.press("up")
+        if focused_id(app) != "back":
+            failures.append("up arrow should move from Continue to Back")
+        app.pop_screen()
+        await pilot.pause(0.2)
+
+        app.push_screen(mod.UserScreen())
+        await pilot.pause(0.4)
+        await pilot.press("down")
+        if focused_id(app) != "fullname":
+            failures.append(f"down arrow should move to the next field, got {focused_id(app)}")
+        await pilot.press("up")
+        if focused_id(app) != "hostname":
+            failures.append("up arrow should move back to the computer name")
+        app.pop_screen()
+        await pilot.pause(0.2)
+
+        app.push_screen(mod.NetworkScreen())
+        await pilot.pause(0.6)
+        dropdown = app.screen.query_one("#ssid", Select)
+        if focused_id(app) != "ssid":
+            failures.append(f"network screen should start on the network list, got {focused_id(app)}")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        if not dropdown.expanded:
+            failures.append("Enter should open the network list")
+        await pilot.press("down")
+        await pilot.pause(0.1)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        if dropdown.value is Select.BLANK:
+            failures.append("Enter should choose a network from the open list")
+        if dropdown.expanded:
+            failures.append("network list should close after choosing")
+    return failures
+
+
+async def main() -> None:
+    failures: list[str] = await check_arrow_navigation()
     app = mod.JupiterSetup()
     async with app.run_test(size=(110, 46)) as pilot:
         await pilot.pause(0.5)
@@ -130,6 +204,7 @@ async def main() -> None:
     if mode != "0o600":
         failures.append(f"answers file mode {mode}, expected 0o600")
     tmp.unlink(missing_ok=True)
+    mod.ANSWERS_FILE.unlink(missing_ok=True)
 
     if failures:
         print("FAILED:")

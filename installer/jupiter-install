@@ -197,12 +197,17 @@ install_aur() {
     write_target "$sudo_rule" "$JUP_USERNAME ALL=(ALL) NOPASSWD: ALL"
     run chmod 440 "$sudo_rule"
 
-    # paru is AUR-only, so bootstrap it from the paru-bin AUR package.
-    chroot_run runuser -u "$JUP_USERNAME" -- bash -c \
-        'set -e; cd /tmp && rm -rf paru-bin && git clone --depth 1 https://aur.archlinux.org/paru-bin.git && cd paru-bin && makepkg -si --noconfirm --needed && cd /tmp && rm -rf paru-bin'
+    # AUR packages are extras: a failure here is a warning and never aborts the install.
+    # stdin is /dev/null so an unexpected prompt cannot wait on the installer's terminal.
 
-    # The default browser is installed from the AUR; failure here should not abort the install.
-    if ! chroot_run runuser -u "$JUP_USERNAME" -- paru -S --noconfirm --needed --skipreview zen-browser-bin; then
+    # paru is AUR-only, so bootstrap it from the paru-bin AUR package.
+    if ! chroot_run runuser -u "$JUP_USERNAME" -- bash -c 'set -e; cd /tmp && rm -rf paru-bin && git clone --depth 1 https://aur.archlinux.org/paru-bin.git && cd paru-bin && makepkg -si --noconfirm --needed && cd /tmp && rm -rf paru-bin' </dev/null; then
+        warn "paru could not be installed, so Zen Browser was skipped. After first boot, run 'paru -S zen-browser-bin' once paru is available."
+        return 0
+    fi
+
+    # The default browser is installed from the AUR.
+    if ! chroot_run runuser -u "$JUP_USERNAME" -- paru -S --noconfirm --needed --skipreview zen-browser-bin </dev/null; then
         warn "zen-browser-bin could not be installed. Run 'paru -S zen-browser-bin' after first boot."
     fi
 }
@@ -211,9 +216,30 @@ remove_temporary_sudo() {
     run rm -f "$TARGET/etc/sudoers.d/99-jupiter-install"
 }
 
+# Stop processes still running inside the target (for example a gpg-agent left behind by makepkg).
+# They keep the target busy, so the final umount would fail after an otherwise complete install.
+stop_target_processes() {
+    local proc root
+    for proc in /proc/[0-9]*; do
+        root="$(readlink "$proc/root" 2>/dev/null || true)"
+        if [[ "$root" == "$TARGET" || "$root" == "$TARGET"/* ]]; then
+            kill "${proc##*/}" 2>/dev/null || true
+        fi
+    done
+}
+
 unmount_target() {
     run sync
-    run umount -R "$TARGET"
+    if [[ "$DRY_RUN" == 1 ]]; then
+        echo "+ stop processes still running inside $TARGET"
+    else
+        stop_target_processes
+    fi
+    # Everything was synced above; a lazy detach is safe if something still holds the mount.
+    if ! run umount -R "$TARGET"; then
+        warn "$TARGET is still busy; detaching it lazily."
+        run umount -R -l "$TARGET"
+    fi
 }
 
 on_error() {
