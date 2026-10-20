@@ -114,8 +114,28 @@ async def check_arrow_navigation() -> list[str]:
     return failures
 
 
+async def check_user_screen_fits_80x24() -> list[str]:
+    """The account screen must fit an 80x24 console: no scrolling, every field and button visible."""
+    failures: list[str] = []
+    app = mod.JupiterSetup()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.3)
+        app.push_screen(mod.UserScreen())
+        await pilot.pause(0.4)
+        card = app.screen.query_one("#card")
+        if card.max_scroll_y != 0:
+            failures.append(f"account screen overflows 80x24 by {card.max_scroll_y} rows (needs scrolling)")
+        for widget in list(app.screen.query(Input)) + list(app.screen.query(Button)):
+            region = widget.region
+            inside = card.region.y <= region.y and region.bottom <= card.region.bottom
+            if not inside or region.bottom > 24:
+                failures.append(f"{widget.id} is not fully visible at 80x24")
+    return failures
+
+
 async def main() -> None:
     failures: list[str] = await check_arrow_navigation()
+    failures += await check_user_screen_fits_80x24()
     app = mod.JupiterSetup()
     async with app.run_test(size=(110, 46)) as pilot:
         await pilot.pause(0.5)

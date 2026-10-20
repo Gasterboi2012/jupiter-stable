@@ -277,6 +277,7 @@ class JupiterScreen(Screen):
     TOTAL = 6
     TITLE_TEXT = ""
     SUBTITLE_TEXT = ""
+    CARD_CLASS = ""
 
     def frame(self, *body: object) -> ComposeResult:
         yield Header(show_clock=False)
@@ -284,7 +285,7 @@ class JupiterScreen(Screen):
             f"Step {self.STEP} of {self.TOTAL}   ·   arrows or Tab: move   ·   Enter: select",
             classes="step",
         )
-        with card():
+        with card(classes=self.CARD_CLASS):
             yield Static(self.TITLE_TEXT, classes="title")
             yield Static(self.SUBTITLE_TEXT, classes="subtitle")
             yield from body
@@ -451,23 +452,31 @@ class DiskScreen(JupiterScreen):
         self.app.push_screen(UserScreen())
 
 
+def labelled(label: str, widget: Input) -> Input:
+    """Put the field label in the input's border, which saves a line per field on short consoles."""
+    widget.border_title = label
+    return widget
+
+
 class UserScreen(JupiterScreen):
     STEP = 4
+    CARD_CLASS = "compact"  # 80x24 consoles: this form must fit without scrolling
     TITLE_TEXT = "Your account"
     SUBTITLE_TEXT = "Create the user you will log in with. This user gets sudo rights."
 
     def compose(self) -> ComposeResult:
         yield from self.frame(
-            Static("Computer name", classes="field"),
-            Input("jupiter", id="hostname", placeholder="jupiter"),
-            Static("Full name (optional)", classes="field"),
-            Input(id="fullname", placeholder="Ada Lovelace"),
-            Static("Username", classes="field"),
-            Input(id="username", placeholder="ada"),
-            Static("Password", classes="field"),
-            Input(password=True, id="password"),
-            Static("Repeat password", classes="field"),
-            Input(password=True, id="password2"),
+            Horizontal(
+                labelled("Computer name", Input("jupiter", id="hostname", placeholder="jupiter")),
+                labelled("Full name (optional)", Input(id="fullname", placeholder="Ada Lovelace")),
+                classes="row first",
+            ),
+            labelled("Username", Input(id="username", placeholder="ada", classes="gap")),
+            Horizontal(
+                labelled("Password", Input(password=True, id="password")),
+                labelled("Repeat password", Input(password=True, id="password2")),
+                classes="row",
+            ),
             Static("", id="error", classes="error"),
             buttons(
                 Button("Back", id="back"),
@@ -728,6 +737,28 @@ class JupiterSetup(App):
     .field {
         color: #e0a526;
         margin-top: 1;
+    }
+    #card.compact {
+        padding: 0 3;
+    }
+    #card.compact .subtitle {
+        margin-bottom: 0;
+    }
+    #card.compact Input {
+        margin-bottom: 0;
+    }
+    #card.compact .gap {
+        margin-bottom: 1;
+    }
+    .row {
+        height: auto;
+    }
+    .row.first {
+        margin-bottom: 1;
+    }
+    .row Input {
+        width: 1fr;
+        margin-right: 1;
     }
     .error {
         color: #ff6b6b;
