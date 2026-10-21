@@ -133,9 +133,44 @@ async def check_user_screen_fits_80x24() -> list[str]:
     return failures
 
 
+async def check_account_and_quit_rules() -> list[str]:
+    """A colon in the full name must be rejected, and Ctrl+Q must not quit during the install."""
+    failures: list[str] = []
+    app = mod.JupiterSetup()
+    async with app.run_test(size=(110, 46)) as pilot:
+        await pilot.pause(0.3)
+        app.push_screen(mod.UserScreen())
+        await pilot.pause(0.4)
+        screen = app.screen
+        screen.query_one("#username", Input).value = "ada"
+        screen.query_one("#password", Input).value = "pass1234"
+        screen.query_one("#password2", Input).value = "pass1234"
+        screen.query_one("#fullname", Input).value = "Ada:Lovelace"
+        if screen.validate() is None:
+            failures.append("a colon in the full name should be rejected (it breaks /etc/passwd)")
+        screen.query_one("#fullname", Input).value = "Ada Lovelace"
+        if screen.validate() is not None:
+            failures.append(f"valid account rejected: {screen.validate()}")
+
+        app.push_screen(mod.InstallScreen())
+        await pilot.pause(0.3)
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.3)
+        if not app.is_running or not isinstance(app.screen, mod.InstallScreen):
+            failures.append("Ctrl+Q quit the app while the install was still running")
+        for _ in range(60):
+            await pilot.pause(0.2)
+            if app.screen.install_done:
+                break
+        if not app.screen.install_done:
+            failures.append("demo install did not finish")
+    return failures
+
+
 async def main() -> None:
     failures: list[str] = await check_arrow_navigation()
     failures += await check_user_screen_fits_80x24()
+    failures += await check_account_and_quit_rules()
     app = mod.JupiterSetup()
     async with app.run_test(size=(110, 46)) as pilot:
         await pilot.pause(0.5)

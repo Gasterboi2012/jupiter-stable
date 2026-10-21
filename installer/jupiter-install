@@ -79,6 +79,8 @@ load_answers() {
 validate_answers() {
     [[ "${JUP_DISK:-}" =~ ^/dev/[A-Za-z0-9]+$ ]] || die "invalid disk: '${JUP_DISK:-}'"
     [[ "${JUP_USERNAME:-}" =~ ^[a-z_][a-z0-9_-]{0,30}$ && "$JUP_USERNAME" != root ]] || die "invalid username"
+    # The full name goes into /etc/passwd (GECOS): a colon or control character would corrupt the entry.
+    [[ "${JUP_FULLNAME:-}" != *:* && "${JUP_FULLNAME:-}" != *[[:cntrl:]]* ]] || die "invalid full name"
     [[ "${JUP_HOSTNAME:-}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || die "invalid hostname"
     [[ "${JUP_DRIVER:-}" == mesa || "${JUP_DRIVER:-}" == nvidia ]] || die "invalid driver: '${JUP_DRIVER:-}'"
     [[ -n "${JUP_PASSWORD:-}" ]] || die "password is empty"
@@ -131,7 +133,8 @@ configure_system() {
     write_target "$TARGET/etc/locale.conf" "LANG=en_US.UTF-8"
     write_target "$TARGET/etc/vconsole.conf" "KEYMAP=us"
     chroot_run ln -sf /usr/share/zoneinfo/UTC /etc/localtime
-    chroot_run hwclock --systohc
+    # Needs an RTC device inside the chroot; the clock is corrected by NTP after boot anyway.
+    chroot_run hwclock --systohc || warn "could not set the hardware clock from the chroot"
 
     write_target "$TARGET/etc/hostname" "$JUP_HOSTNAME"
     write_target "$TARGET/etc/hosts" "127.0.0.1 localhost
@@ -172,9 +175,16 @@ install_bootloader() {
 timeout 3
 console-mode max
 editor no"
+    # Microcode goes first. Only list images that pacstrap installed: systemd-boot refuses to boot on a missing initrd.
+    local ucode="" img
+    for img in intel-ucode.img amd-ucode.img; do
+        if [[ "$DRY_RUN" == 1 || -f "$TARGET/boot/$img" ]]; then
+            ucode+="initrd  /$img"$'\n'
+        fi
+    done
     write_target "$TARGET/boot/loader/entries/jupiter.conf" "title   Jupiter Linux
 linux   /vmlinuz-linux
-initrd  /initramfs-linux.img
+${ucode}initrd  /initramfs-linux.img
 options root=UUID=$root_uuid rw quiet loglevel=3 $KERNEL_EXTRA_PARAMS"
 }
 
@@ -214,6 +224,9 @@ install_aur() {
 
 remove_temporary_sudo() {
     run rm -f "$TARGET/etc/sudoers.d/99-jupiter-install"
+    # The copy of the live resolv.conf (for the AUR build) points at the live resolver stub.
+    # NetworkManager writes the installed system's own DNS settings on first boot.
+    run rm -f "$TARGET/etc/resolv.conf"
 }
 
 # Stop processes still running inside the target (for example a gpg-agent left behind by makepkg).

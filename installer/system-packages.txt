@@ -3,6 +3,8 @@
 
 # Base system and kernel
 base
+intel-ucode
+amd-ucode
 linux
 linux-firmware
 base-devel

@@ -493,10 +493,13 @@ class UserScreen(JupiterScreen):
         username = self.query_one("#username", Input).value.strip()
         password = self.query_one("#password", Input).value
         password2 = self.query_one("#password2", Input).value
+        fullname = self.query_one("#fullname", Input).value.strip()
         if not HOSTNAME_RE.match(hostname):
             return "Computer name: letters, digits and hyphens only (max 63)."
         if not USERNAME_RE.match(username) or username == "root":
             return "Username: lowercase letters, digits, '-' or '_', starting with a letter or '_'."
+        if ":" in fullname or any(ord(char) < 32 for char in fullname):
+            return "Full name cannot contain ':' or control characters."
         if len(password) < 6:
             return "Password must be at least 6 characters."
         if password != password2:
@@ -606,6 +609,7 @@ class InstallScreen(JupiterScreen):
     STEP = 6
     TITLE_TEXT = "Installing Jupiter Linux"
     SUBTITLE_TEXT = "This takes a few minutes. Do not power off the machine."
+    install_done = False  # Ctrl+Q must not quit while jupiter-install is still writing the disk
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -658,6 +662,7 @@ class InstallScreen(JupiterScreen):
         self.finish(code)
 
     def finish(self, code: int) -> None:
+        self.install_done = True
         result = self.query_one("#result", Static)
         if code == 0:
             self.query_one("#step-label", Static).update("Installation complete.")
@@ -805,6 +810,12 @@ class JupiterSetup(App):
 
     def on_mount(self) -> None:
         self.push_screen(WelcomeScreen())
+
+    def action_quit(self) -> None:
+        screen = self.screen
+        if isinstance(screen, InstallScreen) and not screen.install_done:
+            return
+        self.exit()
 
 
 def main() -> int:
